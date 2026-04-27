@@ -1,74 +1,47 @@
-'use client';
-
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
+import { notFound, redirect } from 'next/navigation';
 import { Navbar } from '@/components/Navbar';
 import { Board } from '@/components/Board';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
-import type { User } from '@supabase/supabase-js';
+import { createServerSupabaseClient } from '@/lib/supabase-server';
 
-export default function BoardPage() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [hasAccess, setHasAccess] = useState(false);
-  const router = useRouter();
-  const params = useParams();
-  const orgId = params.orgId as string;
-  const boardId = params.boardId as string;
+interface BoardPageProps {
+  params: Promise<{ orgId: string; boardId: string }>;
+}
 
-  useEffect(() => {
-    const checkAccess = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+export default async function BoardPage({ params }: BoardPageProps) {
+  const { orgId, boardId } = await params;
+  const supabase = await createServerSupabaseClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-      if (!user) {
-        router.push('/auth/login');
-        return;
-      }
-
-      // Check if user is member of organization
-      const { data: member } = await supabase
-        .from('organization_members')
-        .select('id')
-        .eq('organization_id', orgId)
-        .eq('user_id', user.id)
-        .single();
-
-      if (!member) {
-        setHasAccess(false);
-        setLoading(false);
-        return;
-      }
-
-      setUser(user);
-      setHasAccess(true);
-      setLoading(false);
-    };
-
-    checkAccess();
-  }, [orgId, router]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <p className="text-lg text-gray-600">Carregando...</p>
-      </div>
-    );
+  if (!user) {
+    redirect('/auth/login');
   }
 
-  if (!hasAccess) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen gap-4">
-        <p className="text-lg text-gray-600">Sem permissão para acessar este quadro</p>
-        <Link href="/dashboard">
-          <Button>Voltar ao Painel</Button>
-        </Link>
-      </div>
-    );
+  const [{ data: membership }, { data: board }] = await Promise.all([
+    supabase
+      .from('organization_members')
+      .select('id')
+      .eq('organization_id', orgId)
+      .eq('user_id', user.id)
+      .maybeSingle(),
+    supabase
+      .from('boards')
+      .select('id')
+      .eq('id', boardId)
+      .eq('organization_id', orgId)
+      .maybeSingle(),
+  ]);
+
+  if (!membership) {
+    redirect('/dashboard');
+  }
+
+  if (!board) {
+    notFound();
   }
 
   return (
@@ -81,7 +54,7 @@ export default function BoardPage() {
             Voltar
           </Button>
         </Link>
-        <Board />
+        <Board boardId={boardId} orgId={orgId} />
       </div>
     </main>
   );

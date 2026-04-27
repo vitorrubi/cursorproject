@@ -1,8 +1,6 @@
 'use client';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Column } from './Column';
 import type { Column as ColumnType, Card } from '@/lib/types';
@@ -15,43 +13,22 @@ import {
   DragEndEvent,
   DragOverEvent,
 } from '@dnd-kit/core';
-import { SortableContext, arrayMove } from '@dnd-kit/sortable';
 import { computeReorder } from '@/lib/reorder';
 
-export function Board() {
-  const router = useRouter();
-  const [boardId, setBoardId] = useState<string | null>(null);
-  const [orgId, setOrgId] = useState<string | null>(null);
+interface BoardProps {
+  boardId: string;
+  orgId: string;
+}
+
+type CardUpdateMap = Record<string, { column_id: string; position: number }>;
+
+export function Board({ boardId, orgId }: BoardProps) {
   const queryClient = useQueryClient();
-
-  // Get board ID from URL or params
-  useEffect(() => {
-    const fetchBoard = async () => {
-      // If we're in /dashboard/organizations/[orgId]/boards/[boardId]
-      const pathParts = window.location.pathname.split('/');
-      const boardIndex = pathParts.indexOf('boards');
-      if (boardIndex > 0 && pathParts[boardIndex + 1]) {
-        const bid = pathParts[boardIndex + 1];
-        const oid = pathParts[pathParts.indexOf('organizations') + 1];
-        setBoardId(bid);
-        setOrgId(oid);
-        return;
-      }
-
-      // Otherwise get default board for user
-      const { data } = await supabase.from('boards').select('id').limit(1);
-      if (data && data.length > 0) {
-        setBoardId(data[0].id);
-      }
-    };
-    fetchBoard();
-  }, []);
 
   // Fetch columns and cards
   const { data: columns = [], isLoading } = useQuery({
-    queryKey: ['columns', boardId],
+    queryKey: ['columns', orgId, boardId],
     queryFn: async () => {
-      if (!boardId) return [];
       const { data } = await supabase
         .from('columns')
         .select('*')
@@ -63,9 +40,8 @@ export function Board() {
   });
 
   const { data: cards = [] } = useQuery({
-    queryKey: ['cards', boardId],
+    queryKey: ['cards', orgId, boardId],
     queryFn: async () => {
-      if (!boardId) return [];
       const { data } = await supabase
         .from('cards')
         .select('*')
@@ -77,14 +53,23 @@ export function Board() {
   });
 
   // Build container -> item mapping for dnd-kit
-  const containers: Record<string, string[]> = {};
-  (columns as ColumnType[]).forEach((col) => {
-    containers[col.id] = (cards as Card[])
-      .filter((c) => c.column_id === col.id)
-      .map((c) => `card-${c.id}`);
-  });
-
   const sensors = useSensors(useSensor(PointerSensor));
+
+  const applyCardUpdates = (currentCards: Card[], updates: CardUpdateMap) => {
+    return currentCards.map((card) => {
+      const update = updates[card.id];
+
+      if (!update) {
+        return card;
+      }
+
+      return {
+        ...card,
+        column_id: update.column_id,
+        position: update.position,
+      };
+    });
+  };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -117,26 +102,20 @@ export function Board() {
     if (!updates || Object.keys(updates).length === 0) return;
 
     // optimistic update: apply set of updates locally
-    queryClient.setQueryData(['cards', boardId], (old: any) => {
+    queryClient.setQueryData<Card[]>(['cards', orgId, boardId], (old) => {
       if (!old) return old;
-      const map = updates;
-      return (old as Card[]).map((c) => {
-        if (map[c.id]) {
-          return { ...c, column_id: map[c.id].column_id, position: map[c.id].position };
-        }
-        return c;
-      });
+
+      return applyCardUpdates(old, updates);
     });
 
     // persist all updates
     try {
-      const promises: Promise<any>[] = [];
-      for (const [cardId, change] of Object.entries(updates)) {
-        // cast builder to Promise to satisfy TypeScript (builder is thenable at runtime)
-        promises.push(
-          (supabase.from('cards').update({ column_id: change.column_id, position: change.position }).eq('id', cardId) as unknown) as Promise<any>
-        );
-      }
+      const promises = Object.entries(updates).map(([cardId, change]) =>
+        supabase
+          .from('cards')
+          .update({ column_id: change.column_id, position: change.position })
+          .eq('id', cardId)
+      );
       await Promise.all(promises);
 
       // add history entry for moved card if column changed, otherwise 'reordered'
@@ -155,10 +134,10 @@ export function Board() {
           },
         ]);
       }
-    } catch (e) {
-      queryClient.invalidateQueries({ queryKey: ['cards', boardId] });
+    } catch {
+      queryClient.invalidateQueries({ queryKey: ['cards', orgId, boardId] });
     } finally {
-      queryClient.invalidateQueries({ queryKey: ['cards', boardId] });
+      queryClient.invalidateQueries({ queryKey: ['cards', orgId, boardId] });
     }
   };
 
@@ -176,15 +155,10 @@ export function Board() {
     const updates = computeReorder(cards as Card[], activeCardId, overId);
     if (!updates || Object.keys(updates).length === 0) return;
 
-    queryClient.setQueryData(['cards', boardId], (old: any) => {
+    queryClient.setQueryData<Card[]>(['cards', orgId, boardId], (old) => {
       if (!old) return old;
-      const map = updates;
-      return (old as Card[]).map((c) => {
-        if (map[c.id]) {
-          return { ...c, column_id: map[c.id].column_id, position: map[c.id].position };
-        }
-        return c;
-      });
+
+      return applyCardUpdates(old, updates);
     });
   };
 

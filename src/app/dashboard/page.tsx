@@ -1,39 +1,30 @@
-'use client';
+import { redirect } from 'next/navigation';
+import { createServerSupabaseClient } from '@/lib/supabase-server';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
-import type { User } from '@supabase/supabase-js';
+export default async function DashboardPage() {
+  const supabase = await createServerSupabaseClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-export default function DashboardPage() {
-  const [loading, setLoading] = useState(true);
-  const router = useRouter();
+  if (!user) {
+    redirect('/auth/login');
+  }
 
-  useEffect(() => {
-    const checkAuthAndOrganization = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+  const [{ data: ownedOrgs }, { data: memberOrgs }] = await Promise.all([
+    supabase.from('organizations').select('id').eq('owner_id', user.id).limit(1),
+    supabase
+      .from('organization_members')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .limit(1),
+  ]);
 
-      if (!user) {
-        router.push('/auth/login');
-        return;
-      }
+  const firstOrganizationId = ownedOrgs?.[0]?.id || memberOrgs?.[0]?.organization_id;
 
-      const response = await fetch('/api/organizations');
-      const organizations = await response.json();
+  if (firstOrganizationId) {
+    redirect(`/dashboard/organizations/${firstOrganizationId}`);
+  }
 
-      if (organizations.length > 0) {
-        router.push(`/dashboard/organizations/${organizations[0].id}`);
-      } else {
-        router.push('/dashboard/setup');
-      }
-    };
-
-    checkAuthAndOrganization();
-  }, [router]);
-
-  return (
-    <div className="flex items-center justify-center min-h-screen">
-      <p className="text-lg text-gray-600">Carregando...</p>
-    </div>
-  );
+  redirect('/dashboard/setup');
 }
